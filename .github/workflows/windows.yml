@@ -13,7 +13,7 @@ name: Windows
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ code-veronica, master, main ]
   pull_request:
   workflow_dispatch:
 
@@ -52,10 +52,41 @@ jobs:
           -DCMAKE_C_COMPILER=clang-cl
           -DCMAKE_CXX_COMPILER=clang-cl
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_C_FLAGS=/clang:-march=bdver2
+          -DCMAKE_CXX_FLAGS=/clang:-march=bdver2
 
+
+      # This isolated compile makes a rejected clang-cl CPU argument fail
+      # before the large runtime build floods the log with unrelated warnings.
+      - name: Verify FX-8350 (Piledriver) compiler target
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:RUNNER_TEMP "fx8350-target-check.c"
+          $obj = Join-Path $env:RUNNER_TEMP "fx8350-target-check.obj"
+          Set-Content -Path $src -Value "int fx8350_target_check(void) { return 0; }"
+          clang-cl /nologo /c /clang:-march=bdver2 $src "/Fo$obj"
+          if ($LASTEXITCODE -ne 0) { throw "clang-cl rejected the Piledriver target (-march=bdver2)." }
 
       - name: Build
-        run: cmake --build build
+        shell: pwsh
+        run: |
+          cmake --build build --verbose *> build.log
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) {
+            Write-Host "===== compiler/linker diagnostics ====="
+            Select-String -Path build.log -Pattern 'FAILED:|error:|fatal error:|unknown argument|unknown target CPU|LNK[0-9]+|error C[0-9]+|subcommand failed|undefined reference|unresolved external' -Context 4,8
+            Write-Host "===== last 100 lines of build.log ====="
+            Get-Content build.log -Tail 100
+          }
+          exit $buildExit
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-log-${{ matrix.build_type }}
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Verify the library exists
         shell: bash
