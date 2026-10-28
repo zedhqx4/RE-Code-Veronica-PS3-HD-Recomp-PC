@@ -175,3 +175,42 @@ jobs:
           cmake -S tests/sync_stress -B build-sync -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           cmake --build build-sync --target test_cond_semantics
           ctest --test-dir build-sync -R "^cond_" --output-on-failure
+
+      # The Windows job builds the runtime SDK, not a game executable. Publish
+      # a downloadable Release bundle so a green CI run leaves a useful ZIP.
+      # The Code Veronica lift and game data are intentionally not in Git.
+      - name: Package FX-8350 runtime SDK
+        if: matrix.build_type == 'Release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="ps3recomp-${GITHUB_SHA:0:7}-win-x64-piledriver"
+          STAGE="dist/${NAME}"
+          mkdir -p "${STAGE}"
+          cmake --install build --prefix "${STAGE}"
+          cp README.md LICENSE CONTRIBUTORS.md "${STAGE}/"
+          mkdir -p "${STAGE}/docs"
+          cp docs/*.md "${STAGE}/docs/"
+          cp -r tools "${STAGE}/tools"
+          find "${STAGE}/tools" -type d -name __pycache__ -prune -exec rm -rf {} +
+          {
+            echo "ps3recomp Windows x64 runtime SDK"
+            echo "CPU target: AMD Piledriver / FX-8350 (bdver2)"
+            echo "Commit:     ${GITHUB_SHA}"
+            echo "Run:        ${GITHUB_RUN_ID}"
+            echo
+            echo "This is the runtime SDK bundle (static library, headers, tools and docs)."
+            echo "It is NOT a ready-to-play Code Veronica game ZIP; game data and generated"
+            echo "game-specific PPU/SPU sources are not stored in this repository."
+          } > "${STAGE}/VERSION.txt"
+          (cd dist && cmake -E tar cf "${NAME}.zip" --format=zip "${NAME}")
+          ls -lh "dist/${NAME}.zip"
+
+      - name: Upload runtime SDK ZIP
+        if: matrix.build_type == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps3recomp-win-x64-piledriver
+          path: dist/ps3recomp-*-win-x64-piledriver.zip
+          if-no-files-found: error
+          retention-days: 30
