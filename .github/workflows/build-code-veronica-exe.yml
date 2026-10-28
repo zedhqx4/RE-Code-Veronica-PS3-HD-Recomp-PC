@@ -1,0 +1,152 @@
+name: Build Code Veronica EXE (FX-8350)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-exe:
+    # This must run on the Windows PC that holds the private game lift.
+    # Do not change this to windows-latest: the generated PPU/SPU sources are
+    # intentionally not committed and must never be uploaded to GitHub.
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Check local lift and stage FFmpeg runtime
+        run: |
+          $localRoot = 'D:\ps3recomp'
+          $recompRoot = Join-Path $localRoot 'src\recomp'
+          $spuRoot = Join-Path $localRoot 'projects\code_veronica\spu'
+          $ffmpegSource = Join-Path $localRoot 'third_party\ffmpeg\bin'
+
+          if (-not (Test-Path (Join-Path $recompRoot 'ppu_recomp.h'))) {
+            throw "Missing $recompRoot\ppu_recomp.h. The EU game lift must already exist on this Windows PC."
+          }
+          $ppuSources = @(Get-ChildItem $recompRoot -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^ppu_recomp_.*\.(cpp|c)$' })
+          if ($ppuSources.Count -eq 0) {
+            throw "No lifted PPU source files found in $recompRoot."
+          }
+          $spuImages = @(Get-ChildItem $spuRoot -Filter 'spu_recomp.c' -File -Recurse -ErrorAction SilentlyContinue)
+          if ($spuImages.Count -eq 0) {
+            throw "No lifted SPU images found under $spuRoot."
+          }
+
+          $requiredDlls = @('avcodec-61.dll', 'avutil-59.dll', 'swscale-8.dll', 'swresample-5.dll')
+          foreach ($dll in $requiredDlls) {
+            if (-not (Test-Path (Join-Path $ffmpegSource $dll))) {
+              throw "Missing $dll in $ffmpegSource."
+            }
+          }
+
+          $ffmpegDestination = Join-Path $env:GITHUB_WORKSPACE 'third_party\ffmpeg\bin'
+          New-Item -ItemType Directory -Force -Path $ffmpegDestination | Out-Null
+          Copy-Item (Join-Path $ffmpegSource '*') $ffmpegDestination -Force
+          Write-Host "Found $($ppuSources.Count) lifted PPU files and $($spuImages.Count) SPU images."
+          Write-Host 'Generated game sources remain on the local PC; they are not uploaded as artifacts.'
+
+      - name: Configure Release for AMD Piledriver (FX-8350)
+        run: |
+          $workspace = $env:GITHUB_WORKSPACE.Replace('\', '/')
+          $localRoot = 'D:/ps3recomp'
+          $project = Join-Path $env:GITHUB_WORKSPACE 'projects\code_veronica'
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build\code-veronica-eu'
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE 'dist\bin'
+          $llvm = 'C:\Program Files\LLVM\bin'
+          $clang = Join-Path $llvm 'clang-cl.exe'
+          $lld = Join-Path $llvm 'lld-link.exe'
+          if (-not (Test-Path $clang)) { $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source }
+          if (-not (Test-Path $lld)) { $lld = (Get-Command lld-link.exe -ErrorAction Stop).Source }
+
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $cmakeArgs = @(
+            '-S', $project,
+            '-B', $buildDir,
+            '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            "-DCMAKE_C_COMPILER=$clang",
+            "-DCMAKE_CXX_COMPILER=$clang",
+            "-DCMAKE_LINKER=$lld",
+            '-DCMAKE_C_FLAGS=/clang:-march=bdver2',
+            '-DCMAKE_CXX_FLAGS=/EHsc /clang:-march=bdver2',
+            '-DCMAKE_C_FLAGS_RELEASE=/O2 /Ob2',
+            '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /Ob2',
+            "-DPS3RECOMP_DIR=$workspace",
+            "-DRECOMP_DIR=$localRoot/src/recomp",
+            "-DSPU_DIR=$localRoot/projects/code_veronica/spu",
+            '-DSPU_ARCH=AVX',
+            '-DCV_REGION=EU',
+            '-DPORT_ENABLE_SPU=ON',
+            '-DPS3RECOMP_BUILD_TESTS=OFF',
+            "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($outputDir.Replace('\', '/'))"
+          )
+          & cmake @cmakeArgs
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+
+      - name: Build CodeVeronicaPort.exe
+        run: |
+          $buildDir = Join-Path $env:GITHUB_WORKSPACE 'build\code-veronica-eu'
+          cmake --build $buildDir --parallel 6
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
+
+      - name: Package executable and runtime DLLs
+        run: |
+          $workspace = $env:GITHUB_WORKSPACE
+          $bin = Join-Path $workspace 'dist\bin'
+          $exe = Join-Path $bin 'CodeVeronicaPort.exe'
+          if (-not (Test-Path $exe)) { throw "Build did not produce $exe." }
+
+          $stage = Join-Path $workspace 'dist\CodeVeronicaPort-FX8350'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $files = @(
+            'CodeVeronicaPort.exe',
+            'avcodec-61.dll',
+            'avutil-59.dll',
+            'swscale-8.dll',
+            'swresample-5.dll',
+            'SAVE-LIBRARY-NOTICES.txt'
+          )
+          foreach ($name in $files) {
+            $path = Join-Path $bin $name
+            if (-not (Test-Path $path)) { throw "Required output missing: $path" }
+            Copy-Item $path $stage -Force
+          }
+
+          $fsr = Join-Path $workspace 'third_party\amd_fsr31\bin\amd_fidelityfx_framegeneration_dx12.dll'
+          if (Test-Path $fsr) { Copy-Item $fsr $stage -Force }
+          foreach ($name in @('LICENSE', 'THIRD-PARTY-NOTICES.md')) {
+            $path = Join-Path $workspace $name
+            if (Test-Path $path) { Copy-Item $path $stage -Force }
+          }
+          $localization = Join-Path $workspace 'projects\code_veronica\localization'
+          if (Test-Path $localization) {
+            Copy-Item $localization (Join-Path $stage 'assets') -Recurse -Force
+          }
+          @(
+            'Code Veronica X HD — EU Release',
+            'CPU target: AMD Piledriver / FX-8350 (bdver2); lifted SPU target: AVX (no AVX2).',
+            'Built from the code-veronica branch by the local Windows runner.',
+            'The original game data is not included; keep using your own legally obtained game files.'
+          ) | Set-Content (Join-Path $stage 'BUILD-INFO.txt')
+
+          $zip = Join-Path $workspace 'dist\CodeVeronicaPort-FX8350.zip'
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Format-List FullName,Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodeVeronicaPort-FX8350
+          path: dist/CodeVeronicaPort-FX8350.zip
+          if-no-files-found: error
+          retention-days: 30
