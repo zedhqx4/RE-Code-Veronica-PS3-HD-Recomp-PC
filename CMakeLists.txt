@@ -105,6 +105,9 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/smaa_hlsl.h"
 target_include_directories(ps3recomp_runtime PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/smaa"
+    # FFmpeg 7.1 public API headers used by cv_ffmpeg.c. The decoder loads
+    # avcodec/avutil/swscale DLLs dynamically, so no FFmpeg import libs are needed.
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg/include"
 )
 # HLE modules include their own headers
 target_include_directories(ps3recomp_runtime PRIVATE
