@@ -52,6 +52,8 @@ jobs:
           -DCMAKE_C_COMPILER=clang-cl
           -DCMAKE_CXX_COMPILER=clang-cl
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_C_FLAGS="-march=bdver1"
+          -DCMAKE_CXX_FLAGS="-march=bdver1"
 
       - name: Build
         run: cmake --build build
