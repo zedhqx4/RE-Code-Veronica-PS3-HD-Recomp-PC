@@ -53,7 +53,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang-cl
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_C_FLAGS=/clang:-march=bdver2
-          -DCMAKE_CXX_FLAGS=/clang:-march=bdver2
+          '-DCMAKE_CXX_FLAGS=/EHsc /clang:-march=bdver2'
 
 
       # This isolated compile makes a rejected clang-cl CPU argument fail
